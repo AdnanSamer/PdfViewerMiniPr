@@ -1,0 +1,6 @@
+@PdfViewerMiniPr_HostAddress = http://localhost:5043
+
+GET {{PdfViewerMiniPr_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###
