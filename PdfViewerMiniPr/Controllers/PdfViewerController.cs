@@ -8,6 +8,8 @@ using PdfViewrMiniPr.Domain.Entities;
 using PdfViewrMiniPr.Domain.Enums;
 using PdfViewrMiniPr.Infrastructure.Database;
 using PdfViewrMiniPr.Infrastructure.Repositories;
+using Syncfusion.DocIO;
+using Syncfusion.DocIORenderer;
 using Syncfusion.EJ2.PdfViewer;
 using Syncfusion.Pdf;
 using Syncfusion.Pdf.Graphics;
@@ -27,8 +29,7 @@ namespace PdfViewerMiniPr.Controllers;
 [ApiController]
 public class PdfViewerController : ControllerBase
 {
-    private IWebHostEnvironment _hostingEnvironment;
-    //Initialize the memory cache object   
+    private IWebHostEnvironment _hostingEnvironment; 
     public IMemoryCache _cache;
     private readonly AppDbContext _db;
     private readonly IWorkflowRepository _workflowRepository;
@@ -39,11 +40,7 @@ public class PdfViewerController : ControllerBase
         _cache = cache;
         _db = db;
         _workflowRepository = workflowRepository;
-        Console.WriteLine("PdfViewerController initialized");
     }
-
-    // Helper method to safely convert Dictionary<string, object> to Dictionary<string, string>
-    // Handles booleans, numbers, and null values
     private Dictionary<string, string> ConvertToStringDictionary(Dictionary<string, object>? jsonObject)
     {
         var result = new Dictionary<string, string>();
@@ -58,7 +55,7 @@ public class PdfViewerController : ControllerBase
             }
             else if (kvp.Value is bool boolValue)
             {
-                value = boolValue.ToString().ToLowerInvariant(); // "true" or "false"
+                value = boolValue.ToString().ToLowerInvariant();
             }
             else if (kvp.Value is JToken jToken)
             {
@@ -73,7 +70,6 @@ public class PdfViewerController : ControllerBase
         return result;
     }
 
-    // Helper method to safely get boolean value from Dictionary<string, object>
     private bool GetBoolValue(Dictionary<string, object>? jsonObject, string key, bool defaultValue = false)
     {
         if (jsonObject == null || !jsonObject.TryGetValue(key, out var value))
@@ -88,7 +84,6 @@ public class PdfViewerController : ControllerBase
         return defaultValue;
     }
 
-    // Helper method to safely get string value from Dictionary<string, object>
     private string? GetStringValue(Dictionary<string, object>? jsonObject, string key)
     {
         if (jsonObject == null || !jsonObject.TryGetValue(key, out var value))
@@ -97,7 +92,34 @@ public class PdfViewerController : ControllerBase
         return value?.ToString();
     }
 
-    // Helper method to check if PDF is read-only for external users (status = Completed)
+    private bool GetBoolValueFromStringDict(Dictionary<string, string>? jsonObject, string key, bool defaultValue = false)
+    {
+        if (jsonObject == null || !jsonObject.TryGetValue(key, out var value))
+            return defaultValue;
+
+        if (string.IsNullOrWhiteSpace(value))
+            return defaultValue;
+
+        // Try parsing as boolean (handles "true", "True", "TRUE", "false", etc.)
+        if (bool.TryParse(value, out var parsed))
+            return parsed;
+
+        // Also handle "1" and "0" as boolean
+        if (value == "1")
+            return true;
+        if (value == "0")
+            return false;
+
+        return defaultValue;
+    }
+    private string? GetStringValueFromStringDict(Dictionary<string, string>? jsonObject, string key)
+    {
+        if (jsonObject == null || !jsonObject.TryGetValue(key, out var value))
+            return null;
+
+        return value;
+    }
+
     private async Task<bool> IsPdfReadOnlyAsync(string? documentPath, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrEmpty(documentPath))
@@ -105,15 +127,12 @@ public class PdfViewerController : ControllerBase
 
         try
         {
-            // Get the full document path
             string fullPath = GetDocumentPath(documentPath);
             if (string.IsNullOrEmpty(fullPath))
                 return false;
 
-            // Find workflow by PDF file path
             var workflow = await _workflowRepository.GetByPdfFilePathAsync(fullPath, cancellationToken);
             
-            // If workflow exists and status is Completed (4), it's read-only for external users
             if (workflow != null && workflow.Status == WorkflowStatus.Completed)
             {
                 return true;
@@ -121,64 +140,55 @@ public class PdfViewerController : ControllerBase
 
             return false;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            Console.WriteLine($"Error checking if PDF is read-only: {ex.Message}");
-            // On error, allow the operation (fail open for safety)
             return false;
         }
     }
 
     [HttpPost("Load")]
-    //Post action for Loading the PDF documents   
+    //Post action for Loading the PDF documents - accepts Dictionary<string, object> with robust filename/base64 detection
     public async Task<IActionResult> Load([FromBody] Dictionary<string, object> jsonObject)
     {
-        Console.WriteLine("Load called");
+        
         try
         {
-            //Initialize the PDF viewer object with memory cache object
             PdfRenderer pdfviewer = new PdfRenderer(_cache);
             MemoryStream stream = new MemoryStream();
             object jsonResult = new object();
 
             var document = GetStringValue(jsonObject, "document");
-            Console.WriteLine($"Load - document preview: {(document?.Length > 100 ? document.Substring(0, 100) + "..." : document)}");
             
             if (!string.IsNullOrEmpty(document))
             {
                 bool isFileName = GetBoolValue(jsonObject, "isFileName");
-                Console.WriteLine($"Load - isFileName: {isFileName}");
 
-                // Helper to check if a string looks like a filename (short, no base64 chars, has extension, etc.)
                 bool LooksLikeFilename(string doc)
                 {
                     if (string.IsNullOrEmpty(doc)) return false;
-                    // If it's very short (like "17" or a filename), it's likely a filename
                     if (doc.Length < 50 && !doc.Contains("data:") && !doc.Contains("base64"))
                     {
-                        // Check if it has a file extension or is just a number/name
                         if (doc.Contains(".") || doc.Length < 20)
                             return true;
                     }
-                    // If it contains path separators, it's a filename
                     if (doc.Contains("/") || doc.Contains("\\"))
                         return true;
                     return false;
                 }
 
-                // If isFileName is false but it looks like a filename, treat it as a filename
                 if (!isFileName && LooksLikeFilename(document))
                 {
-                    Console.WriteLine($"Load - Document looks like filename, treating as filename: {document}");
                     isFileName = true;
                 }
 
                 if (isFileName)
                 {
                     string documentPath = GetDocumentPath(document);
+
                     if (!string.IsNullOrEmpty(documentPath) && System.IO.File.Exists(documentPath))
                     {
-                        Console.WriteLine($"Load - Loading from file: {documentPath}");
+                        var info = new FileInfo(documentPath);
+
                         byte[] bytes = await System.IO.File.ReadAllBytesAsync(documentPath);
                         stream = new MemoryStream(bytes);
                     }
@@ -188,52 +198,43 @@ public class PdfViewerController : ControllerBase
 
                         if (fileName == "http" || fileName == "https")
                         {
-                            Console.WriteLine($"Load - Loading from URL: {document}");
+                            
                             using var httpClient = new HttpClient();
                             byte[] pdfDoc = await httpClient.GetByteArrayAsync(document);
                             stream = new MemoryStream(pdfDoc);
                         }
                         else
                         {
-                            Console.WriteLine($"Load - File not found: {document}");
+                            
                             return this.Content(document + " is not found");
                         }
                     }
                 }
                 else
                 {
-                    // Handle base64 string - could be a data URL or raw base64
                     string base64String = document;
                     
-                    // Check if it's a data URL (e.g., "data:application/pdf;base64,<base64string>")
                     if (base64String.Contains(","))
                     {
-                        // Extract the base64 part after the comma
                         int commaIndex = base64String.IndexOf(",");
                         base64String = base64String.Substring(commaIndex + 1);
                     }
                     
-                    // Validate base64 string before conversion
                     base64String = base64String.Trim();
                     
-                    // Remove any whitespace
                     base64String = base64String.Replace(" ", "").Replace("\n", "").Replace("\r", "");
                     
-                    // Validate it's a valid base64 string format
                     if (string.IsNullOrEmpty(base64String))
                     {
                         return BadRequest(new { error = "Empty base64 string provided." });
                     }
                     
-                    // Check if it looks like base64 (length should be multiple of 4, contains base64 chars)
                     bool isValidBase64Format = base64String.Length % 4 == 0 && 
-                                               base64String.Length > 10 && // Base64 PDFs are usually long
+                                               base64String.Length > 10 && 
                                                System.Text.RegularExpressions.Regex.IsMatch(base64String, @"^[A-Za-z0-9+/=]+$");
                     
                     if (!isValidBase64Format)
                     {
-                        // If invalid base64 format, try treating it as a filename instead
-                        Console.WriteLine($"Load - Invalid base64 format (length: {base64String.Length}), trying as filename: {document.Substring(0, Math.Min(50, document.Length))}...");
                         string documentPath = GetDocumentPath(document);
                         if (!string.IsNullOrEmpty(documentPath) && System.IO.File.Exists(documentPath))
                         {
@@ -249,15 +250,13 @@ public class PdfViewerController : ControllerBase
                     {
                         try
                         {
-                            Console.WriteLine($"Load - Attempting base64 conversion (length: {base64String.Length})");
+                            
                             byte[] bytes = Convert.FromBase64String(base64String);
                             stream = new MemoryStream(bytes);
-                            Console.WriteLine($"Load - Base64 conversion successful, PDF size: {bytes.Length} bytes");
+                            
                         }
                         catch (FormatException ex)
-                        {
-                            // If base64 conversion fails, try as filename
-                            Console.WriteLine($"Load - Base64 conversion failed: {ex.Message}, trying as filename");
+                        {                          
                             string documentPath = GetDocumentPath(document);
                             if (!string.IsNullOrEmpty(documentPath) && System.IO.File.Exists(documentPath))
                             {
@@ -272,16 +271,12 @@ public class PdfViewerController : ControllerBase
                     }
                 }
             }
-
-            // Convert to string dictionary for Syncfusion
             var stringDict = ConvertToStringDictionary(jsonObject);
             jsonResult = pdfviewer.Load(stream, stringDict);
             return Content(JsonConvert.SerializeObject(jsonResult));
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in Load: {ex.Message}");
-            Console.WriteLine($"Stack trace: {ex.StackTrace}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -325,10 +320,8 @@ public class PdfViewerController : ControllerBase
                 }
                 else
                 {
-                    // Handle base64 string - could be a data URL or raw base64
                     string base64String = document;
                     
-                    // Check if it's a data URL
                     if (base64String.Contains(","))
                     {
                         base64String = base64String.Substring(base64String.IndexOf(",") + 1);
@@ -361,7 +354,6 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in ValidatePassword: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -372,7 +364,6 @@ public class PdfViewerController : ControllerBase
     {
         try
         {
-            //Initialize the PDF Viewer object with memory cache object
             PdfRenderer pdfviewer = new PdfRenderer(_cache);
             var stringDict = ConvertToStringDictionary(jsonObject);
             var jsonResult = pdfviewer.GetBookmarks(stringDict);
@@ -380,7 +371,6 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in Bookmarks: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -391,7 +381,6 @@ public class PdfViewerController : ControllerBase
     {
         try
         {
-            //Initialize the PDF Viewer object with memory cache object
             PdfRenderer pdfviewer = new PdfRenderer(_cache);
             var stringDict = ConvertToStringDictionary(jsonObject);
             object jsonResult = pdfviewer.GetPage(stringDict);
@@ -399,7 +388,6 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in RenderPdfPages: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -410,7 +398,6 @@ public class PdfViewerController : ControllerBase
     {
         try
         {
-            //Initialize the PDF Viewer object with memory cache object
             PdfRenderer pdfviewer = new PdfRenderer(_cache);
             var stringDict = ConvertToStringDictionary(jsonObject);
             object jsonResult = pdfviewer.GetDocumentText(stringDict);
@@ -418,7 +405,6 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in RenderPdfTexts: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -429,7 +415,6 @@ public class PdfViewerController : ControllerBase
     {
         try
         {
-            //Initialize the PDF Viewer object with memory cache object
             PdfRenderer pdfviewer = new PdfRenderer(_cache);
             var stringDict = ConvertToStringDictionary(jsonObject);
             object result = pdfviewer.GetThumbnailImages(stringDict);
@@ -437,7 +422,6 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in RenderThumbnailImages: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -448,7 +432,6 @@ public class PdfViewerController : ControllerBase
     {
         try
         {
-            //Initialize the PDF Viewer object with memory cache object
             PdfRenderer pdfviewer = new PdfRenderer(_cache);
             var stringDict = ConvertToStringDictionary(jsonObject);
             object jsonResult = pdfviewer.GetAnnotationComments(stringDict);
@@ -456,7 +439,6 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in RenderAnnotationComments: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -467,7 +449,6 @@ public class PdfViewerController : ControllerBase
     {
         try
         {
-            // Check if PDF is read-only (status = Completed)
             var document = GetStringValue(jsonObject, "document") ?? GetStringValue(jsonObject, "fileName");
             if (await IsPdfReadOnlyAsync(document))
             {
@@ -477,21 +458,16 @@ public class PdfViewerController : ControllerBase
             PdfRenderer pdfviewer = new PdfRenderer(_cache);
             var stringDict = ConvertToStringDictionary(jsonObject);
 
-            // Check if JSON format is requested
             bool requestJsonFormat = stringDict.ContainsKey("annotationDataFormat") &&
                                      stringDict["annotationDataFormat"].Equals("Json", StringComparison.OrdinalIgnoreCase);
 
             string jsonResult = pdfviewer.ExportAnnotation(stringDict);
 
-            // If JSON format was requested but we got a PDF data URL, try to extract JSON from it
             if (requestJsonFormat && !string.IsNullOrWhiteSpace(jsonResult) && jsonResult.StartsWith("data:application/pdf"))
             {
-                // The Syncfusion ExportAnnotation might return PDF when annotations are empty
-                // Return empty JSON array instead
                 jsonResult = "[]";
             }
 
-            // Optionally persist annotations to DB when documentId provided
             var documentIdStr = GetStringValue(jsonObject, "documentId");
             if (!string.IsNullOrEmpty(documentIdStr) && int.TryParse(documentIdStr, out var docId))
             {
@@ -508,7 +484,6 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in ExportAnnotations: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -519,7 +494,6 @@ public class PdfViewerController : ControllerBase
     {
         try
         {
-            // Check if PDF is read-only (status = Completed)
             var document = GetStringValue(jsonObject, "document") ?? GetStringValue(jsonObject, "fileName");
             if (await IsPdfReadOnlyAsync(document))
             {
@@ -531,7 +505,6 @@ public class PdfViewerController : ControllerBase
             string jsonResult = string.Empty;
             object? JsonResult = null;
 
-            // If documentId provided and we have persisted annotations, return them
             var documentIdStr = GetStringValue(jsonObject, "documentId");
             if (!string.IsNullOrEmpty(documentIdStr) && int.TryParse(documentIdStr, out var docId))
             {
@@ -598,7 +571,6 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in ImportAnnotations: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -615,7 +587,6 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in ExportFormFields: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -625,7 +596,6 @@ public class PdfViewerController : ControllerBase
     {
         try
         {
-            // Check if PDF is read-only (status = Completed)
             var document = GetStringValue(jsonObject, "document") ?? GetStringValue(jsonObject, "data");
             if (await IsPdfReadOnlyAsync(document))
             {
@@ -644,7 +614,6 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in ImportFormFields: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -655,7 +624,6 @@ public class PdfViewerController : ControllerBase
     {
         try
         {
-            //Initialize the PDF Viewer object with memory cache object
             PdfRenderer pdfviewer = new PdfRenderer(_cache);
             var stringDict = ConvertToStringDictionary(jsonObject);
             pdfviewer.ClearCache(stringDict);
@@ -663,7 +631,6 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in Unload: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -674,7 +641,6 @@ public class PdfViewerController : ControllerBase
     {
         try
         {
-            //Initialize the PDF Viewer object with memory cache object
             PdfRenderer pdfviewer = new PdfRenderer(_cache);
             var stringDict = ConvertToStringDictionary(jsonObject);
             string documentBase = pdfviewer.GetDocumentAsBase64(stringDict);
@@ -682,7 +648,6 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in Download: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -693,53 +658,108 @@ public class PdfViewerController : ControllerBase
     {
         try
         {
-            // Check if PDF is read-only (status = Completed)
-            var document = GetStringValue(jsonObject, "document") ?? GetStringValue(jsonObject, "fileName");
-            if (await IsPdfReadOnlyAsync(document))
+            var documentBase64 = GetStringValue(jsonObject, "document");
+            var fileName = GetStringValue(jsonObject, "fileName");
+
+            var documentForReadOnly = fileName ?? documentBase64;
+            if (await IsPdfReadOnlyAsync(documentForReadOnly))
             {
                 return StatusCode(403, new { error = "This PDF has been approved and is read-only." });
             }
 
-            PdfRenderer pdfviewer = new PdfRenderer(_cache);
-            var stringDict = ConvertToStringDictionary(jsonObject);
-
-            // Get document as base64 with annotations
-            string documentBase64 = pdfviewer.GetDocumentAsBase64(stringDict);
-
-            // Extract base64 data (remove data URL prefix if present)
-            string base64Data = documentBase64;
-            if (documentBase64.Contains(","))
+            if (string.IsNullOrEmpty(documentBase64))
             {
-                base64Data = documentBase64.Substring(documentBase64.IndexOf(",") + 1);
+                return BadRequest(new { error = "Document data is required." });
             }
 
-            // Decode base64 to bytes
-            byte[] pdfBytes = Convert.FromBase64String(base64Data);
-
-            // Get file path
-            var fileName = GetStringValue(jsonObject, "fileName") ?? GetStringValue(jsonObject, "document");
             if (string.IsNullOrEmpty(fileName))
             {
                 return BadRequest(new { error = "File name is required." });
             }
 
+            var base64Data = documentBase64.Contains(",")
+                ? documentBase64[(documentBase64.IndexOf(',') + 1)..]
+                : documentBase64;
+
+            byte[] pdfBytes;
+            try
+            {
+                pdfBytes = Convert.FromBase64String(base64Data);
+            }
+            catch (FormatException)
+            {
+                return BadRequest(new { error = "Invalid PDF base64 data." });
+            }
+
             string filePath = GetDocumentPath(fileName);
             if (string.IsNullOrEmpty(filePath))
             {
-                return NotFound(new { error = "File not found." });
+                var root = _hostingEnvironment.ContentRootPath;
+                var uploads = Path.Combine(root, "Uploads");
+                Directory.CreateDirectory(uploads);
+                filePath = Path.Combine(uploads, fileName);
             }
 
-            // Write PDF with annotations to file
             await System.IO.File.WriteAllBytesAsync(filePath, pdfBytes);
 
-            Console.WriteLine($"PDF saved with annotations: {filePath}");
+            try
+            {
+                PdfRenderer pdfviewer = new PdfRenderer(_cache);
+                var stringDict = ConvertToStringDictionary(jsonObject);
+                pdfviewer.ClearCache(stringDict);
+            }
+            catch (Exception)
+            {
+            }
+            
+            var info = new FileInfo(filePath);
 
-            return Ok(new { message = "Document saved successfully." });
+            return Ok(new { message = "Document saved successfully.", filePath, size = info.Length });
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in Save: {ex.Message}");
-            Console.WriteLine($"Stack trace: {ex.StackTrace}");
+            return StatusCode(500, new { error = ex.Message });
+        }
+    }
+
+    [HttpGet("DebugPdfFile/{fileName}")]
+    //Diagnostic endpoint to check PDF file status
+    public IActionResult DebugPdfFile(string fileName)
+    {
+        try
+        {
+            var filePath = GetDocumentPath(fileName);
+            
+            if (System.IO.File.Exists(filePath))
+            {
+                var info = new FileInfo(filePath);
+                return Ok(new
+                {
+                    exists = true,
+                    filePath = filePath,
+                    size = info.Length,
+                    lastModified = info.LastWriteTimeUtc,
+                    created = info.CreationTimeUtc
+                });
+            }
+            else
+            {
+                var uploadsPath = Path.Combine(_hostingEnvironment.ContentRootPath, "Uploads", fileName);
+                var dataPath = Path.Combine(_hostingEnvironment.ContentRootPath, "Data", fileName);
+                
+                return Ok(new
+                {
+                    exists = false,
+                    expectedPath = filePath,
+                    uploadsPath = uploadsPath,
+                    uploadsExists = System.IO.File.Exists(uploadsPath),
+                    dataPath = dataPath,
+                    dataExists = System.IO.File.Exists(dataPath)
+                });
+            }
+        }
+        catch (Exception ex)
+        {
             return StatusCode(500, new { error = ex.Message });
         }
     }
@@ -750,7 +770,6 @@ public class PdfViewerController : ControllerBase
     {
         try
         {
-            //Initialize the PDF Viewer object with memory cache object
             PdfRenderer pdfviewer = new PdfRenderer(_cache);
             var stringDict = ConvertToStringDictionary(jsonObject);
             object pageImage = pdfviewer.GetPrintImage(stringDict);
@@ -758,60 +777,35 @@ public class PdfViewerController : ControllerBase
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error in PrintImages: {ex.Message}");
             return StatusCode(500, new { error = ex.Message });
         }
     }
 
-    // Redaction and LoadFile endpoints require additional Syncfusion packages
-    // (Syncfusion.Pdf.Redaction, Syncfusion.DocIO, Syncfusion.Presentation, Syncfusion.XlsIO)
-    // These are commented out until the packages are installed
-    /*
-    [HttpPost("Redaction")]
-    public IActionResult Redaction([FromBody] Dictionary<string, string> jsonObject)
-    {
-        // Requires Syncfusion.Pdf.Redaction package
-        return BadRequest("Redaction feature requires additional Syncfusion packages");
-    }
-
-    [HttpPost("LoadFile")]
-    public IActionResult LoadFile([FromBody] Dictionary<string, string> jsonObject)
-    {
-        // Requires Syncfusion.DocIO, Syncfusion.Presentation, Syncfusion.XlsIO packages
-        return BadRequest("LoadFile feature requires additional Syncfusion packages");
-    }
-    */
-
-    //Gets the path of the PDF document
     private string GetDocumentPath(string document)
     {
         if (string.IsNullOrEmpty(document))
             return string.Empty;
 
-        // If it's already a full path and exists, use it
         if (System.IO.File.Exists(document))
         {
             return document;
         }
 
-        var path = _hostingEnvironment.ContentRootPath;
+        var root = _hostingEnvironment.ContentRootPath;
 
-        // Try Uploads folder first (where we save PDFs from workflows)
-        var uploadsPath = Path.Combine(path, "Uploads", document);
+        var uploadsPath = Path.Combine(root, "Uploads", document);
         if (System.IO.File.Exists(uploadsPath))
         {
             return uploadsPath;
         }
 
-        // Fallback to Data folder (for Syncfusion examples or test files)
-        var dataPath = Path.Combine(path, "Data", document);
+        var dataPath = Path.Combine(root, "Data", document);
         if (System.IO.File.Exists(dataPath))
         {
             return dataPath;
         }
 
-        Console.WriteLine($"Document path not found for: {document}");
-        return string.Empty;
+        return uploadsPath;
     }
 
     // Upload a stamp image
@@ -825,7 +819,6 @@ public class PdfViewerController : ControllerBase
                 return BadRequest("No file uploaded.");
             }
 
-            // Validate file type
             var allowedExtensions = new[] { ".png", ".jpg", ".jpeg", ".gif", ".bmp" };
             var fileExtension = Path.GetExtension(file.FileName).ToLowerInvariant();
             if (!allowedExtensions.Contains(fileExtension))
@@ -833,13 +826,11 @@ public class PdfViewerController : ControllerBase
                 return BadRequest("Invalid file type. Only image files are allowed.");
             }
 
-            // Read file into byte array
             using (var memoryStream = new MemoryStream())
             {
                 await file.CopyToAsync(memoryStream);
                 var imageData = memoryStream.ToArray();
 
-                // Create stamp entity
                 var stamp = new Stamp
                 {
                     Name = string.IsNullOrWhiteSpace(name) ? file.FileName : name,
@@ -861,7 +852,6 @@ public class PdfViewerController : ControllerBase
         }
     }
 
-    // Get all stamps
     [HttpGet("GetStamps")]
     public IActionResult GetStamps()
     {
@@ -887,7 +877,6 @@ public class PdfViewerController : ControllerBase
         }
     }
 
-    // GET: Get stamp image by ID
     [HttpGet("GetStamp/{id}")]
     public IActionResult GetStamp(int id)
     {
@@ -907,7 +896,6 @@ public class PdfViewerController : ControllerBase
         }
     }
 
-    // DELETE: Delete a stamp
     [HttpDelete("DeleteStamp/{id}")]
     public async Task<IActionResult> DeleteStamp(int id)
     {
@@ -979,7 +967,6 @@ public class PdfViewerController : ControllerBase
         public string AppendDocument { get; set; } = string.Empty;
     }
 
-    // ===== Supervisor Review Endpoints =====
 
     [HttpPost("SendToSupervisor")]
     public async Task<IActionResult> SendToSupervisor([FromBody] SendToSupervisorRequest request)
@@ -991,7 +978,6 @@ public class PdfViewerController : ControllerBase
                 return BadRequest("Document data is required.");
             }
 
-            // Strip data URL prefix if present
             string base64String = StripPrefix(request.DocumentBase64);
             byte[] documentBytes = Convert.FromBase64String(base64String);
 
@@ -999,7 +985,6 @@ public class PdfViewerController : ControllerBase
 
             if (request.DocumentId.HasValue && request.DocumentId.Value > 0)
             {
-                // Update existing document
                 document = await _db.Documents.FindAsync(request.DocumentId.Value);
                 if (document == null)
                 {
@@ -1014,7 +999,6 @@ public class PdfViewerController : ControllerBase
             }
             else
             {
-                // Create new document
                 document = new Document
                 {
                     Name = $"Document_{DateTime.UtcNow:yyyyMMddHHmmss}.pdf",
@@ -1098,7 +1082,6 @@ public class PdfViewerController : ControllerBase
                 return BadRequest($"Document is not in pending status. Current status: {document.Status}");
             }
 
-            // Update document status
             if (request.Action.ToLower() == "accept")
             {
                 document.Status = "accepted";
@@ -1117,7 +1100,7 @@ public class PdfViewerController : ControllerBase
             }
 
             document.ReviewedAtUtc = DateTime.UtcNow;
-            document.ReviewedBy = request.ReviewedBy ?? "Supervisor"; // You can get this from authentication context
+            document.ReviewedBy = request.ReviewedBy ?? "Supervisor"; 
             document.ReviewComments = request.Comments;
             document.UpdatedAtUtc = DateTime.UtcNow;
 
@@ -1139,7 +1122,7 @@ public class PdfViewerController : ControllerBase
     public class ReviewDocumentRequest
     {
         public int DocumentId { get; set; }
-        public string Action { get; set; } = string.Empty; // "accept" or "reject"
+        public string Action { get; set; } = string.Empty;
         public string? Comments { get; set; }
         public string? ReviewedBy { get; set; }
     }
@@ -1171,7 +1154,6 @@ public class PdfViewerController : ControllerBase
         }
     }
 
-    // POST PdfViewer/AddSignature
     [HttpPost("AddSignature")]
     public IActionResult AddSignature([FromBody] AddSignatureRequest request)
     {
@@ -1184,7 +1166,6 @@ public class PdfViewerController : ControllerBase
             return BadRequest("Document data and signature image are required.");
         }
 
-        // Prefer the document passed in the request; otherwise fall back to the cached viewer document.
         byte[] pdfBytes;
         if (!string.IsNullOrWhiteSpace(request.DocumentBase64))
         {
@@ -1234,7 +1215,6 @@ public class PdfViewerController : ControllerBase
             Opacity = 1f
         };
 
-        // keep appearance transparent – don't draw any background before the image
         var signatureBytes = Convert.FromBase64String(StripPrefix(request.SignatureBase64));
         using (var imageStream = new MemoryStream(signatureBytes))
         {
@@ -1244,7 +1224,6 @@ public class PdfViewerController : ControllerBase
                 new Syncfusion.Drawing.RectangleF(0, 0, bounds.Width, bounds.Height));
         }
 
-        // lock and flatten so it can't be moved/edited
         stamp.AnnotationFlags = PdfAnnotationFlags.Locked;
         stamp.Flatten = true;
 
@@ -1272,20 +1251,17 @@ public class PdfViewerController : ControllerBase
         public double? BottomMargin { get; set; }
         public string? Author { get; set; }
 
-        // Optional hooks if you still want to read from PdfViewer cache
         public string? HashId { get; set; }
         public string? FileName { get; set; }
         public int? DocumentId { get; set; }
     }
 
-    // Extension method for extracting images from PdfLoadedRubberStampAnnotation
     public static class PdfLoadedRubberStampAnnotationExtension
     {
         public static Stream[] GetImages(PdfLoadedRubberStampAnnotation annotation)
         {
             List<Stream> imageStreams = new List<Stream>();
-            // This is a placeholder - actual implementation would require deeper PDF structure access
-            // For now, return empty array - the frontend should provide imageBase64
+
             return imageStreams.ToArray();
         }
     }

@@ -14,7 +14,6 @@ public class InternalReviewService : IInternalReviewService
     private readonly IWorkflowRepository _workflowRepository;
     private readonly IWorkflowStampRepository _stampRepository;
     private readonly IWorkflowExternalAccessRepository _externalAccessRepository;
-    private readonly IPdfStampService _pdfStampService;
     private readonly IEmailService _emailService;
     private readonly IConfiguration _configuration;
     private readonly IUserRepository _userRepository;
@@ -23,7 +22,6 @@ public class InternalReviewService : IInternalReviewService
         IWorkflowRepository workflowRepository,
         IWorkflowStampRepository stampRepository,
         IWorkflowExternalAccessRepository externalAccessRepository,
-        IPdfStampService pdfStampService,
         IEmailService emailService,
         IConfiguration configuration,
         IUserRepository userRepository)
@@ -31,7 +29,6 @@ public class InternalReviewService : IInternalReviewService
         _workflowRepository = workflowRepository;
         _stampRepository = stampRepository;
         _externalAccessRepository = externalAccessRepository;
-        _pdfStampService = pdfStampService;
         _emailService = emailService;
         _configuration = configuration;
         _userRepository = userRepository;
@@ -39,14 +36,9 @@ public class InternalReviewService : IInternalReviewService
 
     public async Task ApproveInternalAsync(int reviewerUserId, InternalReviewApprovalDto dto, CancellationToken cancellationToken = default)
     {
-        Console.WriteLine($"ApproveInternalAsync - ReviewerUserId: {reviewerUserId}, WorkflowId: {dto.WorkflowId}");
-
         var workflow = await _workflowRepository.GetByIdAsync(dto.WorkflowId, cancellationToken)
                        ?? throw new InvalidOperationException("Workflow not found.");
 
-        Console.WriteLine($"Workflow found - InternalReviewerId: {workflow.InternalReviewerId}, Status: {workflow.Status}");
-
-        // Get user to check role
         var user = await _userRepository.GetByIdAsync(reviewerUserId, cancellationToken);
         if (user == null)
         {
@@ -57,9 +49,6 @@ public class InternalReviewService : IInternalReviewService
         bool isAdmin = user.Role == UserRole.Admin;
         bool isInternalUser = user.Role == UserRole.InternalUser;
 
-        Console.WriteLine($"User check - IsAssignedReviewer: {isAssignedReviewer}, IsAdmin: {isAdmin}, IsInternalUser: {isInternalUser}, UserRole: {user.Role}");
-
-        // Check authorization: User must be assigned reviewer OR Admin OR InternalUser (with reassignment)
         if (!isAssignedReviewer && !isAdmin && !isInternalUser)
         {
             throw new InvalidOperationException(
@@ -69,12 +58,9 @@ public class InternalReviewService : IInternalReviewService
                 $"Only internal reviewers or an Admin can approve this workflow.");
         }
 
-        // If user is not the assigned reviewer but is an InternalUser or Admin, reassign the workflow
         if (!isAssignedReviewer && (isInternalUser || isAdmin))
         {
-            Console.WriteLine($"Reassigning workflow {workflow.Id} from InternalReviewerId {workflow.InternalReviewerId} to {reviewerUserId} ({user.FullName})");
             workflow.InternalReviewerId = reviewerUserId;
-            // Note: We don't save here yet, it will be saved when we update the workflow status
         }
 
         if (workflow.Status != WorkflowStatus.PendingInternalReview)
@@ -82,28 +68,20 @@ public class InternalReviewService : IInternalReviewService
             throw new InvalidOperationException($"Workflow is not in pending internal review state. Current status: {workflow.Status}");
         }
 
-        // Save stamp in DB
-        var stamp = new Domain.Entities.WorkflowStamp
+        if (dto.Stamp != null)
         {
-            WorkflowId = workflow.Id,
-            UserId = reviewerUserId,
-            Label = dto.Stamp.Label,
-            PageNumber = dto.Stamp.PageNumber,
-            X = dto.Stamp.X,
-            Y = dto.Stamp.Y
-        };
-        await _stampRepository.AddAsync(stamp, cancellationToken);
+            var stamp = new Domain.Entities.WorkflowStamp
+            {
+                WorkflowId = workflow.Id,
+                UserId = reviewerUserId,
+                Label = dto.Stamp.Label,
+                PageNumber = dto.Stamp.PageNumber,
+                X = dto.Stamp.X,
+                Y = dto.Stamp.Y
+            };
+            await _stampRepository.AddAsync(stamp, cancellationToken);
+        }
 
-        // Apply stamp to PDF
-        await _pdfStampService.ApplyStampAsync(
-            workflow.PdfFilePath,
-            dto.Stamp.Label,
-            dto.Stamp.PageNumber,
-            dto.Stamp.X,
-            dto.Stamp.Y,
-            cancellationToken);
-
-        // Generate token + OTP
         var token = Guid.NewGuid().ToString("N");
         var otp = GenerateOtp();
         var otpHash = Hash(otp);
@@ -130,7 +108,6 @@ public class InternalReviewService : IInternalReviewService
             var frontendBaseUrl = _configuration["Frontend:BaseUrl"] ?? "http://localhost:4200";
             var approvalLink = $"{frontendBaseUrl}/external-review?token={token}";
             
-            // Create HTML email body with clickable link
             var body = $@"
 <!DOCTYPE html>
 <html>
@@ -170,11 +147,10 @@ public class InternalReviewService : IInternalReviewService
                 body,
                 cancellationToken);
         }
-        catch (Exception ex)
-        {
-            // Log the email error and continue; the workflow is already marked as PendingExternalReview
-            Console.WriteLine($"[Email Error] Failed to send external review email: {ex.Message}");
-        }
+            catch (Exception)
+            {
+                // Ignore email errors; the workflow is already marked as PendingExternalReview
+            }
     }
 
     private static string GenerateOtp()

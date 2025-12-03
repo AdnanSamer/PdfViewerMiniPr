@@ -13,18 +13,15 @@ public class ExternalReviewService : IExternalReviewService
     private readonly IWorkflowExternalAccessRepository _externalAccessRepository;
     private readonly IWorkflowRepository _workflowRepository;
     private readonly IWorkflowStampRepository _stampRepository;
-    private readonly IPdfStampService _pdfStampService;
 
     public ExternalReviewService(
         IWorkflowExternalAccessRepository externalAccessRepository,
         IWorkflowRepository workflowRepository,
-        IWorkflowStampRepository stampRepository,
-        IPdfStampService pdfStampService)
+        IWorkflowStampRepository stampRepository)
     {
         _externalAccessRepository = externalAccessRepository;
         _workflowRepository = workflowRepository;
         _stampRepository = stampRepository;
-        _pdfStampService = pdfStampService;
     }
 
     public async Task<WorkflowSummaryDto?> GetWorkflowByTokenAsync(string token, int? workflowId = null, CancellationToken cancellationToken = default)
@@ -163,42 +160,24 @@ public class ExternalReviewService : IExternalReviewService
             throw new InvalidOperationException($"Workflow is not pending external review. Current status: {workflow.Status}");
         }
 
-        // Apply annotations if provided (from PDF viewer)
-        if (!string.IsNullOrWhiteSpace(dto.AnnotationsJson))
-        {
-            await ApplyAnnotationsToPdfAsync(workflow, dto.AnnotationsJson, cancellationToken);
-        }
-
-        // Save stamp if provided
+        // Save stamp metadata if provided
         if (dto.Stamp != null)
         {
             var stamp = new Domain.Entities.WorkflowStamp
             {
                 WorkflowId = workflow.Id,
-                UserId = null, // External users don't have UserId
+                UserId = null, 
                 Label = dto.Stamp.Label,
                 PageNumber = dto.Stamp.PageNumber,
                 X = dto.Stamp.X,
                 Y = dto.Stamp.Y
             };
             await _stampRepository.AddAsync(stamp, cancellationToken);
-
-            // Apply stamp to PDF
-            await _pdfStampService.ApplyStampAsync(
-                workflow.PdfFilePath,
-                dto.Stamp.Label,
-                dto.Stamp.PageNumber,
-                dto.Stamp.X,
-                dto.Stamp.Y,
-                cancellationToken);
         }
 
         // Update workflow status to Completed
         workflow.Status = WorkflowStatus.Completed;
         workflow.ExternalApprovedAtUtc = DateTime.UtcNow;
-
-        // Note: We don't mark the token as "Used" because external users may need to approve multiple workflows
-        // The token can be reused for other workflows from the same external reviewer
 
         await _workflowRepository.SaveChangesAsync(cancellationToken);
         await _stampRepository.SaveChangesAsync(cancellationToken);
@@ -237,21 +216,11 @@ public class ExternalReviewService : IExternalReviewService
             // Load the PDF file
             byte[] pdfBytes = await System.IO.File.ReadAllBytesAsync(workflow.PdfFilePath, cancellationToken);
             
-            // Use Syncfusion to import annotations
-            // Note: This requires the PDF to be loaded in the viewer cache first
-            // For now, we'll save the annotations JSON to be imported when the PDF is loaded next time
-            // The frontend should call the Save endpoint before approval to persist annotations
-            
-            // Alternative: Use PdfLoadedDocument to add annotations directly
-            // This is more complex and requires parsing the annotation JSON format
-            
-            Console.WriteLine($"Annotations JSON received for workflow {workflow.Id}, length: {annotationsJson.Length}");
             // The actual annotation application will be handled by the Save endpoint
             // which is called by the frontend before approval
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            Console.WriteLine($"Error applying annotations to PDF: {ex.Message}");
             // Don't fail approval if annotation application fails
         }
     }

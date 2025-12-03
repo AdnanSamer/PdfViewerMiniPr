@@ -42,10 +42,11 @@ public class ExternalOtpValidationDto
 
 public class ExternalApprovalDto
 {
-    public string Token { get; set; } = default!;
-    public int? WorkflowId { get; set; } // Optional: if not provided, uses the token's workflow
-    public StampDto? Stamp { get; set; } // Optional: if not provided, just approves without stamp
-    public string? AnnotationsJson { get; set; } // Optional: annotations from PDF viewer to persist
+    public string? Token { get; set; }
+    
+    public int? WorkflowId { get; set; } 
+    public StampDto? Stamp { get; set; } 
+    public string? AnnotationsJson { get; set; } 
 }
 
 public class ExternalUserInfoDto

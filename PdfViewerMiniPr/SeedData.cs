@@ -62,7 +62,7 @@ public static class SeedData
             context.Users.AddRange(adminUser, internalUser1, internalUser2, externalUser);
             context.SaveChanges();
 
-            Console.WriteLine("✅ Seeded 4 users: admin@company.com, internal1@company.com, internal2@company.com, external@client.com");
+        
         }
     }
 

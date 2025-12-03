@@ -16,7 +16,6 @@ public class WorkflowsController : ControllerBase
         _workflowService = workflowService;
     }
 
-    // For demo purposes we accept currentUserId as query; in real app use authentication
     [HttpPost]
     [RequestSizeLimit(50_000_000)]
     public async Task<ActionResult<WorkflowSummaryDto>> Create(

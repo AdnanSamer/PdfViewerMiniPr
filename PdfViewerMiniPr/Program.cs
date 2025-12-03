@@ -16,7 +16,7 @@ using PdfViewrMiniPr.Infrastructure.Repositories;
 var builder = WebApplication.CreateBuilder(args);
 
 // Register Syncfusion license
-SyncfusionLicenseProvider.RegisterLicense("Ngo9BigBOggjHTQxAR8/V1JFaF1cX2hIfExzWmFZfVtgfF9HZlZRRmYuP1ZhSXxWd0RjXH9WcXJVQGBbVUJ9XEM=");
+SyncfusionLicenseProvider.RegisterLicense("Ngo9BigBOggjHTQxAR8/V1JFaF5cXGRCf1FpRmJGdld5fUVHYVZUTXxaS00DNHVRdkdmWH1ecXRSRmZeWUF+X0tWYEA=");
 
 // Add services to the container.
 

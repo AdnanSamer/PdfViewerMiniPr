@@ -1,8 +1,10 @@
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
 using PdfViewrMiniPr.Aplication.DTOs;
 using PdfViewrMiniPr.Aplication.Interfaces;
 using PdfViewrMiniPr.Domain.Entities;
+using PdfViewrMiniPr.Domain.Interfaces;
 using PdfViewrMiniPr.Infrastructure.Repositories;
 
 namespace PdfViewrMiniPr.Aplication.Services;
@@ -12,15 +14,21 @@ public class WorkflowService : IWorkflowService
     private readonly IWorkflowRepository _workflowRepository;
     private readonly IUserRepository _userRepository;
     private readonly IWebHostEnvironment _env;
+    private readonly IEmailService _emailService;
+    private readonly IConfiguration _configuration;
 
     public WorkflowService(
         IWorkflowRepository workflowRepository,
         IUserRepository userRepository,
-        IWebHostEnvironment env)
+        IWebHostEnvironment env,
+        IEmailService emailService,
+        IConfiguration configuration)
     {
         _workflowRepository = workflowRepository;
         _userRepository = userRepository;
         _env = env;
+        _emailService = emailService;
+        _configuration = configuration;
     }
 
     public async Task<WorkflowSummaryDto> CreateWorkflowAsync(
@@ -48,6 +56,50 @@ public class WorkflowService : IWorkflowService
 
         await _workflowRepository.AddAsync(workflow, cancellationToken);
         await _workflowRepository.SaveChangesAsync(cancellationToken);
+
+        // Send internal-review email with login + returnUrl link
+        try
+        {
+            var frontendBaseUrl = _configuration["Frontend:BaseUrl"] ?? "http://localhost:4200";
+            var reviewLink = $"{frontendBaseUrl.TrimEnd('/')}/login?returnUrl=/internal/review/{workflow.Id}";
+
+            var subject = "New document assigned for internal review";
+            var body = $@"
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset=""utf-8"">
+    <style>
+        body {{ font-family: Arial, sans-serif; line-height: 1.6; color: #333; }}
+        .container {{ max-width: 600px; margin: 0 auto; padding: 20px; }}
+        .button {{ display: inline-block; padding: 12px 24px; background-color: #007bff; color: #ffffff; text-decoration: none; border-radius: 5px; margin: 20px 0; }}
+        .button:hover {{ background-color: #0056b3; }}
+    </style>
+</head>
+<body>
+    <div class=""container"">
+        <h2>Internal Review Request</h2>
+        <p>A new document has been assigned to you for internal review.</p>
+        <p><strong>Title:</strong> {workflow.Title}</p>
+        <p style=""text-align: center;"">
+            <a href=""{reviewLink}"" class=""button"">Open Review</a>
+        </p>
+        <p>Or copy and paste this link into your browser:</p>
+        <p style=""word-break: break-all; color: #666;"">{reviewLink}</p>
+    </div>
+</body>
+</html>";
+
+            await _emailService.SendAsync(
+                reviewer.Email,
+                subject,
+                body,
+                cancellationToken);
+        }
+        catch
+        {
+            // Ignore email errors; workflow creation should not fail because of email issues
+        }
 
         return new WorkflowSummaryDto
         {
